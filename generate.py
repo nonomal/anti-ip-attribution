@@ -1,7 +1,7 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
 # 针对部分网站显示IP归属地的分流规则
 # anti-ip-attribution generate.py
-# https://github.com/lwd-temp/anti-ip-attribution
+# https://github.com/SunsetMkt/anti-ip-attribution
 # 从rules.yaml生成配置文件，由Actions调用。
 # 读取文件：
 # rules.yaml 配置文件
@@ -12,6 +12,8 @@
 # rule-provider-direct.yaml rule-provider-proxy.yaml rule-provider-reject.yaml
 # surge.list Surge分流规则
 # quantumultx.list QuantumultX分流规则
+# quantumultx-domesticsocial.list QuantumultX分流规则，策略组名称为DomesticSocial
+import copy
 import os
 import sys
 
@@ -65,6 +67,23 @@ def seprate_comma(string):
     '''分割字符串'''
     return string.split(',')
 
+def yaml_list(rules):
+    '''yaml写法转list写法'''
+    ret=[]
+    for rule in rules:
+        seprated = seprate_comma(rule)
+        # if rule.startswith('IP-CIDR'):
+        #     # 'IP-CIDR,203.107.1.0/24,REJECT,no-resolve'
+        #     del seprated[2]
+        # else:
+        #     # 'DOMAIN-SUFFIX,zijieapi.com,DIRECT'
+        #     seprated.pop()
+        del seprated[2]
+        ret.append(','.join(seprated))
+    return ret
+
+def get_list_string(list):
+    return '\n'.join(list)
 
 def check_rules(config):
     '''检查规则是否有误'''
@@ -151,30 +170,57 @@ def generate_rule_provider(config):
     '''生成rule-provider.yaml'''
     comment = get_head_comment(
         config, 'rule-provider.yaml', '适用于Clash的Rule Provider功能，详见https://lancellc.gitbook.io/clash/clash-config-file/rule-provider')
-    rules = config['config']['rules']
-    # https://github.com/lwd-temp/anti-ip-attribution/issues/23#issuecomment-1223931835
+    # 为了不影响其他软件规则的生成，使用深拷贝
+    rules = copy.deepcopy(config['config']['rules'])
+    
+    # 检查 IP rules 有无 `no-resolve` 字段，没有的话加上, 防止 DNS 泄漏
+    for i in range(len(rules)):
+        if rules[i].startswith('IP-CIDR') and 'no-resolve' not in rules[i]:
+            rules[i] = rules[i] + ',no-resolve'
+
+    # https://github.com/SunsetMkt/anti-ip-attribution/issues/23#issuecomment-1223931835
     direct = []
     proxy = []
     reject = []
     for rule in rules:
-        parts = seprate_comma(rule)
-        if len(parts) == 3:
-            if parts[2] == 'DIRECT':
-                direct.append(rule)
-            elif parts[2] == 'REJECT':
-                reject.append(rule)
-            elif parts[2] == 'no-resolve':
-                proxy.append(rule)
-            else:
-                proxy.append(rule)
-        elif len(parts) == 2:
+        
+        if 'REJECT' in rule:
+            reject.append(rule)
+        elif 'DIRECT' in rule:
+            direct.append(rule)
+        else:
             proxy.append(rule)
+
     # Summary of rules
     print('生成rule-provider.yaml')
     output = {}
     output['payload'] = rules
     output = comment + get_yaml_string(output)
     save_string(output, os.path.join('generated', 'rule-provider.yaml'))
+
+    # Direct rules list
+    print('生成rule-set-direct.list')
+    comment = get_head_comment(config, 'rule-set-direct.list',
+                               '适用于Clash RULE-SET')
+    output = yaml_list(direct)
+    output = comment + get_list_string(output)
+    save_string(output, os.path.join('generated', 'rule-set-direct.list'))
+
+    # Proxy rules list
+    print('生成rule-set-proxy.list')
+    comment = get_head_comment(config, 'rule-set-proxy.list',
+                               '适用于Clash RULE-SET')
+    output = proxy
+    output = comment + get_list_string(output)
+    save_string(output, os.path.join('generated', 'rule-set-proxy.list'))
+
+    # Reject rules list
+    print('生成rule-set-reject.list')
+    comment = get_head_comment(config, 'rule-set-reject.list',
+                               '适用于Clash RULE-SET')
+    output = yaml_list(reject) 
+    output = comment + get_list_string(output)
+    save_string(output, os.path.join('generated', 'rule-set-reject.list'))
     # Direct rules
     print('生成rule-provider-direct.yaml')
     comment = get_head_comment(config, 'rule-provider-direct.yaml',
@@ -205,10 +251,20 @@ def generate_surge(config):
     '''生成surge.list'''
     comment = get_head_comment(
         config, 'surge.list', 'Surge分流规则')
-    rules = ''
-    for rule in config['config']['rules']:
-        rules += rule + '\n'
-    output = comment + rules
+
+    # 为了不影响其他软件规则的生成，使用深拷贝
+    rules = copy.deepcopy(config["config"]["rules"])
+
+    # 检查 IP rules 有无 `no-resolve` 字段，没有的话加上, 防止 DNS 泄漏
+    for i in range(len(rules)):
+        if rules[i].startswith("IP-CIDR") and "no-resolve" not in rules[i]:
+            rules[i] = rules[i] + ",no-resolve"
+
+    gen_rules = ''
+
+    for rule in rules:
+        gen_rules += rule + '\n'
+    output = comment + gen_rules 
     save_string(output, os.path.join('generated', 'surge.list'))
 
 
@@ -216,7 +272,10 @@ def generate_quantumultx(config):
     '''生成quantumultx.list'''
     comment = get_head_comment(
         config, 'quantumultx.list', 'QuantumultX分流规则')
+    commentDomesticSocial = get_head_comment(
+        config, 'quantumultx-domesticsocial.list', 'QuantumultX分流规则，策略组名称为DomesticSocial')
     rules = ''
+    rulesDomesticSocial = ''
     for rule in config['config']['rules']:
         rule = rule.strip()
         # Quantumult X 中, IP-CIDR6 的相关规则名称为 IP6-CIDR, 无法识别前缀为 IP-CIDR6 的规则.
@@ -227,10 +286,15 @@ def generate_quantumultx(config):
             print('针对Quantumult X替换IP-CIDR6为IP6-CIDR：' + rule)
         if len(seprate_comma(rule)) == 2:
             rules += rule + ',IP\n'
+            rulesDomesticSocial += rule + ',DomesticSocial\n'
         else:
             rules += rule + '\n'
+            rulesDomesticSocial += rule + '\n'
     output = comment + rules
+    outputDomesticSocial = commentDomesticSocial + rulesDomesticSocial
     save_string(output, os.path.join('generated', 'quantumultx.list'))
+    save_string(outputDomesticSocial, os.path.join(
+        'generated', 'quantumultx-domesticsocial.list'))
 
 
 if __name__ == '__main__':
